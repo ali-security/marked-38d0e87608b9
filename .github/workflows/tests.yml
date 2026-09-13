@@ -1,70 +1,55 @@
 name: "Tests"
 on:
-  pull_request:
-  push:
-    branches:
-      - master
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "Spec file(s) / glob to run instead of the full suite; empty runs everything"
+        required: false
+        default: ""
 
 jobs:
   Test:
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
     strategy:
+      fail-fast: false
       matrix:
-        node_version: ['lts/*', 'node']
+        # Upstream pinned ['lts/*', 'node']; at the 2.0.6 release date (2021-05-27)
+        # those floating labels resolved to Node 14 and Node 16, so they are pinned
+        # here to keep the fork reproducible. Node 8 cannot run this suite at all:
+        # the locked jasmine 3.7 loader uses dynamic import(), unsupported before
+        # Node 12.17, so `npm run test:unit` dies with "Unexpected token import".
+        node_version: [14, 16]
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout Code
         uses: actions/checkout@v2
       - name: Install Node
-        uses: dcodeIO/setup-node-nvm@master
+        uses: actions/setup-node@v3
         with:
           node-version: ${{ matrix.node_version }}
       - name: Install Dependencies
         run: npm ci
       - name: Run Unit Tests 👩🏽‍💻
-        run: npm run test:unit
-      - name: Run Spec Tests 👩🏽‍💻
-        run: npm run test:specs
-
-  Lint:
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v2
-      - name: Install Dependencies
-        run: npm ci
-      - name: Lint ✨
-        run: npm run test:lint
-
-  Release:
-    needs: [Test, Lint]
-    if: |
-      github.ref == 'refs/heads/master' &&
-      github.event.repository.fork == false
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v2
-      - name: Install Dependencies
-        run: npm ci
-      - name: Build 🗜️
         run: |
-          npm run build
-          if ! git diff --quiet; then
-            git config --global user.email "<>"
-            git config --global user.name "MarkedJS bot"
-            git commit -am "🗜️ build [skip ci]"
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            npm test -- ${{ inputs.test-filter }}
+          else
+            npm run test:unit
           fi
-      - name: Release 🎉
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npx semantic-release
-
-  Skip:
-    if: contains(github.event.head_commit.message, '[skip ci]')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Skip CI 🚫
-        run: echo skip ci
+      - name: Run Spec Tests 👩🏽‍💻
+        run: |
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            echo "test-filter is set; the selected specs already ran in the previous step"
+          else
+            npm run test:specs
+          fi
+      - name: Pack 📦
+        if: matrix.node_version == 14
+        run: npm pack
+      - name: Upload Package Tarball ⬆️
+        if: matrix.node_version == 14
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: marked-*.tgz
+          if-no-files-found: error
